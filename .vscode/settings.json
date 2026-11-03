@@ -1,0 +1,5 @@
+{
+    "powerquery.client.additionalSymbolsDirectories": [
+        "d:/Data Science with AIML projects/realtime-event-mesh/.vscode/excel-pq-symbols"
+    ]
+}
