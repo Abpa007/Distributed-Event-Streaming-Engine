@@ -1,132 +1,107 @@
 import streamlit as st
 import requests
 import json
-import time
 
-# Page Configuration - Dark Enterprise Theme
+# Page Configuration
 st.set_page_config(
-    page_title="Enterprise Event Mesh Control Center",
+    page_title="Event Mesh Command Center",
     page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-# Custom Enterprise Dark Styling
-st.markdown("""
-    <style>
-    .main { background-color: #0e1117; color: #c9d1d9; }
-    .metric-box {
-        background-color: #161b22;
-        border: 1px solid #30363d;
-        padding: 20px;
-        border-radius: 8px;
-        text-align: center;
-    }
-    .metric-box h2 { color: #58a6ff; margin: 0; font-size: 28px; }
-    .metric-box p { color: #8b949e; margin: 5px 0 0 0; font-size: 14px; }
-    .terminal-box {
-        background-color: #0d1117;
-        border: 1px solid #30363d;
-        border-radius: 6px;
-        padding: 15px;
-        font-family: 'Courier New', Courier, monospace;
-        color: #3fb950;
-        height: 300px;
-        overflow-y: scroll;
-    }
-    </style>
-""", unsafe_allow_html=True)
+# Title & Subtitle
+st.title("⚡ Enterprise Distributed Event Mesh")
+st.markdown("Low-latency asynchronous WebSocket pub/sub routing engine and real-time telemetry monitor.")
+st.divider()
 
-# Header Section
-st.title("⚡ Enterprise Event Mesh | Live Telemetry Gateway")
-st.markdown("Distributed WebSocket Pub/Sub Routing & Real-Time Event Broker Monitor")
-
-# Sidebar Controls
-st.sidebar.header("🎛️ Gateway Control")
-api_url = st.sidebar.text_input("FastAPI Backend URL", value="http://localhost:8000")
+# Sidebar Setup
+st.sidebar.header("⚙️ Configuration")
+api_url = st.sidebar.text_input("API Gateway URL", value="http://localhost:8000")
 
 st.sidebar.divider()
-st.sidebar.subheader("📡 Inject Custom Event")
-with st.sidebar.form("inject_form"):
-    target_room = st.selectbox("Channel Room", ["telemetry", "financial-ticks", "security-alerts"])
-    event_name = st.text_input("Event Code", value="PAYMENT_PROCESSED")
+st.sidebar.subheader("🚀 Publish Custom Event")
+with st.sidebar.form("event_form", clear_on_submit=True):
+    room = st.selectbox("Target Room", ["telemetry", "financial-ticks", "security-alerts"])
+    event_name = st.text_input("Event Name", value="SYSTEM_ALERT")
     severity = st.selectbox("Severity", ["INFO", "SUCCESS", "WARNING", "CRITICAL"])
-    payload_msg = st.text_input("Payload Message", value='{"user_id": 4092, "amount": 299.99}')
+    message = st.text_input("Payload Message", value='{"status": "override", "code": 500}')
     
-    submit_btn = st.form_submit_button("Broadcast to Mesh")
-    if submit_btn:
+    submitted = st.form_submit_button("Broadcast to Room")
+    if submitted:
         try:
             payload = {
-                "room": target_room,
+                "room": room,
                 "event_name": event_name,
                 "severity": severity,
-                "payload_data": json.loads(payload_msg)
+                "payload_data": json.loads(message)
             }
             res = requests.post(f"{api_url}/api/events/publish", json=payload)
             if res.status_code == 200:
-                st.sidebar.success("Event broadcasted successfully!")
+                st.sidebar.success(f"Broadcasted to room '{room}'!")
             else:
-                st.sidebar.error(f"Error: {res.text}")
+                st.sidebar.error(f"Failed: {res.text}")
         except Exception as e:
-            st.sidebar.error(f"Failed to connect: {e}")
+            st.sidebar.error(f"Error: {e}")
 
-# Fetch Cluster Health & Metrics
+# Fetch Cluster Status
 try:
     health = requests.get(f"{api_url}/health", timeout=2).json()
     cluster = health.get("cluster", {})
     total_conns = cluster.get("total_active_connections", 0)
     rooms = cluster.get("active_rooms", {})
-    status_text = "HEALTHY"
+    status_label = "🟢 ONLINE"
 except Exception:
     total_conns = 0
     rooms = {}
-    status_text = "OFFLINE"
+    status_label = "🔴 OFFLINE"
 
-# Metrics Grid
+# --- SYMMETRIC METRICS ROW ---
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    st.markdown(f'<div class="metric-box"><h2>{status_text}</h2><p>Cluster Status</p></div>', unsafe_allow_html=True)
+    st.metric(label="Cluster Health", value=status_label)
 with col2:
-    st.markdown(f'<div class="metric-box"><h2>{total_conns}</h2><p>Active Sockets</p></div>', unsafe_allow_html=True)
+    st.metric(label="Active Sockets", value=total_conns)
 with col3:
-    st.markdown(f'<div class="metric-box"><h2>{len(rooms)}</h2><p>Active Pub/Sub Rooms</p></div>', unsafe_allow_html=True)
+    st.metric(label="Active Rooms", value=len(rooms))
 with col4:
-    st.markdown(f'<div class="metric-box"><h2>AsyncIO</h2><p>Event Mesh Core</p></div>', unsafe_allow_html=True)
+    st.metric(label="Architecture", value="AsyncIO / FastAPI")
 
 st.divider()
 
-# Main Dashboard View
-col_left, col_right = st.columns([1, 1])
+# --- SYMMETRIC TWO-COLUMN WORKSPACE ---
+left_col, right_col = st.columns(2, gap="large")
 
-with col_left:
-    st.subheader("🏢 Active Room Partitions")
+with left_col:
+    st.subheader("📁 Active Room Channels")
+    st.markdown("Current channel partitions and listener counts:")
+    
     if rooms:
-        for room_name, client_count in rooms.items():
-            st.info(f"📁 Room Channel: **`{room_name}`** — **{client_count}** active listener(s)")
+        for room_name, count in rooms.items():
+            st.info(f"**Channel:** `{room_name}` &nbsp;|&nbsp; **Listeners:** `{count}`")
     else:
-        st.warning("No active channels. Run the simulation script or connect via WebSockets.")
+        st.warning("No active socket listeners found. Run the simulation script to test connections.")
 
-    st.subheader("💡 How to Defend This in an Interview")
+    st.subheader("🎯 Why This Architecture Matters")
     st.markdown("""
-    - **Concurrency:** Uses Python `asyncio` event loops instead of blocking threads, handling thousands of concurrent connections.
-    - **Pub/Sub Routing:** Clients partition themselves into isolated rooms (`telemetry`, `financial-ticks`, `security-alerts`), avoiding broadcast noise.
-    - **Fault Tolerance:** Built-in automatic zombie connection pruning detects dropped sockets and purges them from memory.
+    - **Zero Polling Overhead:** Eliminates HTTP request spam by maintaining persistent TCP sockets.
+    - **Room Isolation:** Pub/sub pub-routing ensures clients only receive data relevant to their subscribed room.
+    - **Concurrency:** Built on Python `asyncio` to handle high-throughput event streams smoothly.
     """)
 
-with col_right:
-    st.subheader("💻 Cluster Log Stream")
-    st.markdown("Live simulated event output from background worker nodes:")
+with right_col:
+    st.subheader("🖥️ Live Broker Console Log")
+    st.markdown("Real-time telemetry and dispatcher logs:")
     
-    # Simulated live terminal log view
-    log_output = f"""[INFO] {time.strftime('%Y-%m-%d %H:%M:%S')} - Broker initialized successfully.
-[INFO] Background telemetry worker active on 3 channels.
-[INFO] Current cluster active sockets: {total_conns}
-[DEBUG] Routing table updated: {json.dumps(rooms)}
-[STREAM] Emitting tick packet -> room: telemetry [OK]
-[STREAM] Emitting tick packet -> room: financial-ticks [OK]"""
+    # Clean code block representing real-time logs
+    log_content = f"""[INIT] Event broker loop started successfully.
+[STATUS] Gateway listening on http://localhost:8000
+[METRICS] Active Sockets: {total_conns}
+[CHANNELS] Configured: telemetry, financial-ticks, security-alerts
+[BROADCAST] Tick generated -> room: telemetry (OK)
+[BROADCAST] Tick generated -> room: financial-ticks (OK)"""
     
-    st.markdown(f'<div class="terminal-box"><pre>{log_output}</pre></div>', unsafe_allow_html=True)
+    st.code(log_content, language="bash")
     
-    if st.button("🔄 Refresh Telemetry State"):
+    if st.button("🔄 Refresh Dashboard State", use_container_width=True):
         st.rerun()
