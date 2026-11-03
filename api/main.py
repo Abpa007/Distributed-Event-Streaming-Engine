@@ -1,19 +1,18 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import asyncio
 import random
-import datetime
+import uuid
 
-from core.broker import manager
+from core.broker import broker
 
 app = FastAPI(
-    title="Real-Time Event-Driven Streaming Engine",
-    description="High-throughput asynchronous event mesh and WebSocket telemetry broadcaster.",
-    version="1.0.0"
+    title="Enterprise Distributed Event Mesh API",
+    description="High-throughput WebSocket messaging broker with room-based pub/sub routing.",
+    version="2.0.0"
 )
 
-# Enable CORS for external dashboard or client connections
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,78 +21,79 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class EventPayload(BaseModel):
+class CustomEvent(BaseModel):
+    room: str
     event_name: str
-    severity: str
-    message: str
+    severity: str  # INFO, WARNING, CRITICAL, SUCCESS
+    payload_data: dict
 
-# Background task to simulate continuous real-time telemetry events
-async def background_telemetry_simulator():
-    """
-    Simulates live system telemetry or stream events every 2 seconds
-    and broadcasts them to all connected WebSocket clients.
-    """
-    event_categories = ["SYSTEM_METRIC", "USER_ACTIVITY", "SECURITY_ALERT", "TRANSACTION_TICK"]
-    severities = ["INFO", "WARNING", "CRITICAL", "SUCCESS"]
+# Background task simulating multi-channel enterprise telemetry
+async def enterprise_telemetry_generator():
+    rooms = ["telemetry", "financial-ticks", "security-alerts"]
+    severities = ["INFO", "WARNING", "SUCCESS", "CRITICAL"]
     
     while True:
-        await asyncio.sleep(2.5) # Emit every 2.5 seconds
-        
-        if len(manager.active_connections) > 0:
-            category = random.choice(event_categories)
-            simulated_data = {
-                "metric_id": random.randint(1000, 9999),
-                "category": category,
-                "severity": random.choice(severities),
-                "value": round(random.uniform(10.0, 99.9), 2),
-                "node": f"worker-node-{random.randint(1, 4)}"
+        await asyncio.sleep(2.0)
+        if broker.client_metadata:
+            target_room = random.choice(rooms)
+            event_type = f"SYS_{target_room.upper()}_TICK"
+            
+            payload = {
+                "transaction_id": str(uuid.uuid4())[:8],
+                "metric_value": round(random.uniform(50.0, 500.0), 2),
+                "node_id": f"edge-worker-{random.randint(1, 6)}",
+                "status": "nominal" if target_room != "security-alerts" else "flagged"
             }
-            await manager.broadcast(event_type=category, payload=simulated_data)
+            await broker.broadcast_to_room(target_room, event_type, payload)
 
 @app.on_event("startup")
 async def startup_event():
-    """Starts the background telemetry simulator loop when the FastAPI server boots up."""
-    asyncio.create_task(background_telemetry_simulator())
+    asyncio.create_task(enterprise_telemetry_generator())
 
-@app.get("/")
-def root_probe():
-    """Health check endpoint."""
+@app.get("/health")
+def cluster_health():
+    """Returns cluster state, active room distributions, and connection counts."""
     return {
-        "status": "online",
-        "service": "Real-Time Event Mesh Engine",
-        "active_websockets": len(manager.active_connections)
+        "status": "healthy",
+        "cluster": broker.get_cluster_stats()
     }
 
 @app.websocket("/ws/stream")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_gateway(websocket: WebSocket, client_id: str = Query(..., description="Unique client session identifier"), room: str = Query("telemetry", description="Initial room to subscribe")):
     """
-    WebSocket endpoint for real-time client event subscriptions.
-    Clients connect here to receive live broadcast streams instantly.
+    Enterprise WebSocket Endpoint with room partitioning and heartbeat management.
     """
-    await manager.connect(websocket)
+    await broker.connect(websocket, client_id, initial_room=room)
     try:
-        # Keep the connection alive and listen for any client messages if needed
         while True:
-            data = await websocket.receive_text()
-            # Echo back confirmation or handle incoming client commands
-            await manager.send_personal_message({"status": "ack", "received": data}, websocket)
+            raw_data = await websocket.receive_text()
+            # Handle client commands (e.g., room switching or heartbeats)
+            try:
+                data = json.loads(raw_data)
+                action = data.get("action")
+                target_room = data.get("room")
+                
+                if action == "JOIN" and target_room:
+                    await broker.join_room(websocket, target_room)
+                    await websocket.send_text(json.dumps({"status": "success", "message": f"Joined room {target_room}"}))
+                elif action == "LEAVE" and target_room:
+                    await broker.leave_room(websocket, target_room)
+                    await websocket.send_text(json.dumps({"status": "success", "message": f"Left room {target_room}"}))
+                elif action == "PING":
+                    await websocket.send_text(json.dumps({"status": "PONG", "timestamp": data.get("timestamp")}))
+            except json.JSONDecodeError:
+                pass
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        broker.disconnect(websocket)
 
-@app.post("/trigger-event")
-async def trigger_custom_event(payload: EventPayload):
+@app.post("/api/events/publish")
+async def publish_event(event: CustomEvent):
     """
-    REST endpoint to manually inject an event into the live stream mesh.
-    Instantly broadcasts the custom event to all active WebSocket listeners.
+    REST webhook to inject custom events directly into a specific room mesh.
     """
-    event_data = {
-        "event_name": payload.event_name,
-        "message": payload.message,
-        "source": "REST_API_TRIGGER"
-    }
-    await manager.broadcast(event_type=payload.severity, payload=event_data)
+    await broker.broadcast_to_room(event.room, event.event_name, event.payload_data)
     return {
-        "status": "success",
-        "broadcasted_to_clients": len(manager.active_connections),
-        "payload": event_data
+        "status": "dispatched",
+        "target_room": event.room,
+        "active_listeners": len(broker.rooms.get(event.room, set()))
     }

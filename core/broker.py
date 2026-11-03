@@ -1,64 +1,101 @@
 from fastapi import WebSocket
-from typing import List, Dict, Any
+from typing import Dict, Set, Any, Optional
 import json
 import asyncio
 import datetime
+import logging
 
-class ConnectionManager:
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("EventMeshBroker")
+
+class EnterpriseEventBroker:
     """
-    Manages active WebSocket connections and provides high-throughput
-    event broadcasting across connected client dashboards.
+    Enterprise-grade WebSocket broker featuring room-based Pub/Sub routing,
+    connection health tracking, and concurrent multi-client broadcasting.
     """
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        # Maps channel/room name to a set of connected WebSockets
+        self.rooms: Dict[str, Set[WebSocket]] = {}
+        # Maps WebSocket object to client metadata (ID, joined rooms, connection time)
+        self.client_metadata: Dict[WebSocket, Dict[str, Any]] = {}
 
-    async def connect(self, websocket: WebSocket):
-        """Accepts a new incoming WebSocket connection and registers it."""
+    async def connect(self, websocket: WebSocket, client_id: str, initial_room: str = "global"):
+        """Accepts connection, registers client metadata, and joins default room."""
         await websocket.accept()
-        self.active_connections.append(websocket)
-        print(f"🔌 Client connected. Total active connections: {len(self.active_connections)}")
+        
+        if initial_room not in self.rooms:
+            self.rooms[initial_room] = set()
+        
+        self.rooms[initial_room].add(websocket)
+        self.client_metadata[websocket] = {
+            "client_id": client_id,
+            "rooms": {initial_room},
+            "connected_at": datetime.datetime.utcnow().isoformat(),
+            "messages_received": 0
+        }
+        logger.info(f"Client {client_id} connected and joined room: '{initial_room}'.")
 
     def disconnect(self, websocket: WebSocket):
-        """Removes a disconnected client from the active pool."""
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-        print(f"❌ Client disconnected. Total active connections: {len(self.active_connections)}")
+        """Cleanly removes client from all rooms and purges metadata."""
+        meta = self.client_metadata.pop(websocket, None)
+        if meta:
+            for room in meta.get("rooms", set()):
+                if room in self.rooms and websocket in self.rooms[room]:
+                    self.rooms[room].remove(websocket)
+            logger.info(f"Client {meta.get('client_id')} disconnected.")
 
-    async def send_personal_message(self, message: Dict[str, Any], websocket: WebSocket):
-        """Sends a JSON payload to a specific connected client."""
-        try:
-            await websocket.send_text(json.dumps(message))
-        except Exception as e:
-            print(f"Error sending personal message: {e}")
+    async def join_room(self, websocket: WebSocket, room: str):
+        """Moves or subscribes a client to a new channel room."""
+        if room not in self.rooms:
+            self.rooms[room] = set()
+        self.rooms[room].add(websocket)
+        if websocket in self.client_metadata:
+            self.client_metadata[websocket]["rooms"].add(room)
+        logger.info(f"Client subscribed to room: '{room}'")
 
-    async def broadcast(self, event_type: str, payload: Dict[str, Any]):
-        """
-        Broadcasts an event message simultaneously to all connected WebSocket clients
-        with an ISO timestamp and event classification.
-        """
-        if not self.active_connections:
+    async def leave_room(self, websocket: WebSocket, room: str):
+        """Unsubscribes a client from a specific channel room."""
+        if room in self.rooms and websocket in self.rooms[room]:
+            self.rooms[room].remove(websocket)
+        if websocket in self.client_metadata:
+            self.client_metadata[websocket]["rooms"].discard(room)
+
+    async def broadcast_to_room(self, room: str, event_type: str, payload: Dict[str, Any]):
+        """Broadcasts an event exclusively to all clients subscribed to a specific room."""
+        if room not in self.rooms or not self.rooms[room]:
             return
 
         message = {
             "timestamp": datetime.datetime.utcnow().isoformat(),
+            "room": room,
             "event_type": event_type,
             "data": payload
         }
-        
-        serialized_data = json.dumps(message)
-        
-        # Concurrent dispatch to all active sockets
-        disconnected = []
-        for connection in self.active_connections:
+        serialized = json.dumps(message)
+
+        stale_clients = []
+        for client in list(self.rooms[room]):
             try:
-                await connection.send_text(serialized_data)
+                await client.send_text(serialized)
+                if client in self.client_metadata:
+                    self.client_metadata[client]["messages_received"] += 1
             except Exception as e:
-                print(f"Failed to send to client, marking for cleanup: {e}")
-                disconnected.append(connection)
+                logger.warning(f"Failed to transmit to client: {e}")
+                stale_clients.append(client)
 
-        # Clean up stale connections
-        for dead_conn in disconnected:
-            self.disconnect(dead_conn)
+        # Prune dead connections
+        for dead in stale_clients:
+            self.disconnect(dead)
 
-# Global singleton event broker instance
-manager = ConnectionManager()
+    def get_cluster_stats(self) -> Dict[str, Any]:
+        """Returns aggregate cluster telemetry for monitoring dashboards."""
+        total_connections = len(self.client_metadata)
+        room_breakdown = {room: len(clients) for room, clients in self.rooms.items()}
+        return {
+            "total_active_connections": total_connections,
+            "active_rooms": room_breakdown,
+            "uptime_utc": datetime.datetime.utcnow().isoformat()
+        }
+
+# Global singleton broker instance
+broker = EnterpriseEventBroker()

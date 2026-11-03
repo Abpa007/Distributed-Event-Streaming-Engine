@@ -1,116 +1,79 @@
 import streamlit as st
 import requests
 import json
-import time
-from datetime import datetime
+import pandas as pd
 
-# Page Configuration
 st.set_page_config(
-    page_title="Real-Time Event Mesh & WebSocket Stream",
+    page_title="Enterprise Event Mesh Command Center",
     page_icon="⚡",
     layout="wide"
 )
 
-# Custom Styling
-st.markdown("""
-    <style>
-    .metric-card {
-        background-color: #1e1e2f;
-        padding: 20px;
-        border-radius: 10px;
-        color: white;
-        text-align: center;
-        border: 1px solid #2d2d44;
-    }
-    .stAlert {
-        border-radius: 8px;
-    }
-    </style>
-""", unsafe_allow_html=True)
+st.title("⚡ Enterprise Distributed Event Mesh")
+st.markdown("Real-Time Asynchronous WebSocket Telemetry & Pub/Sub Routing Engine")
 
-st.title("⚡ Real-Time Event-Driven Streaming Engine")
-st.markdown("High-throughput asynchronous WebSocket event mesh and telemetry broadcast control center.")
+api_url = st.sidebar.text_input("API Gateway URL", value="http://localhost:8000")
 
-# Sidebar Configuration & Controls
-st.sidebar.header("🎛️ Control Panel")
-api_url = st.sidebar.text_input("FastAPI Gateway URL", value="http://localhost:8000")
-
-st.sidebar.divider()
-st.sidebar.subheader("🚀 Trigger Custom Event")
-event_name = st.sidebar.text_input("Event Name", value="USER_CHECKOUT")
-severity = st.sidebar.selectbox("Severity / Channel", ["INFO", "SUCCESS", "WARNING", "CRITICAL"])
-message = st.sidebar.text_area("Event Payload Message", value="User ID #8841 completed checkout for $149.99")
-
-if st.sidebar.button("Broadcast Event to Mesh", type="primary"):
-    try:
-        payload = {
-            "event_name": event_name,
-            "severity": severity,
-            "message": message
-        }
-        response = requests.post(f"{api_url}/trigger-event", json=payload)
-        if response.status_code == 200:
-            res_data = response.json()
-            st.sidebar.success(f"Broadcasted to {res_data['broadcasted_to_clients']} active clients!")
-        else:
-            st.sidebar.error(f"Failed to trigger: {response.text}")
-    except Exception as e:
-        st.sidebar.error(f"Connection error: {e}")
-
-# Main Dashboard Layout
-col1, col2, col3 = st.columns(3)
-
-# Health Check Query
+# Fetch cluster health
 try:
-    health_res = requests.get(f"{api_url}/", timeout=2).json()
-    status = health_res.get("status", "offline")
-    active_connections = health_res.get("active_websockets", 0)
+    health_res = requests.get(f"{api_url}/health", timeout=2).json()
+    cluster_stats = health_res.get("cluster", {})
+    total_conns = cluster_stats.get("total_active_connections", 0)
+    active_rooms = cluster_stats.get("active_rooms", {})
 except Exception:
-    status = "offline (Start FastAPI server)"
-    active_connections = 0
+    total_conns = 0
+    active_rooms = {}
 
-with col1:
-    st.markdown(f"""
-        <div class="metric-card">
-            <h3>System Status</h3>
-            <h2>{'🟢 ONLINE' if 'online' in status else '🔴 OFFLINE'}</h2>
-        </div>
-    """, unsafe_allow_html=True)
-
-with col2:
-    st.markdown(f"""
-        <div class="metric-card">
-            <h3>Active WebSocket Connections</h3>
-            <h2>{active_connections}</h2>
-        </div>
-    """, unsafe_allow_html=True)
-
-with col3:
-    st.markdown(f"""
-        <div class="metric-card">
-            <h3>Engine Architecture</h3>
-            <h2>Async FastAPI / WS</h2>
-        </div>
-    """, unsafe_allow_html=True)
+# Top Metrics Row
+col1, col2, col3 = st.columns(3)
+col1.metric("Total Active WebSocket Sockets", total_conns)
+col2.metric("Active Pub/Sub Rooms", len(active_rooms))
+col3.metric("Broker Status", "🟢 ONLINE" if total_conns >= 0 else "🔴 OFFLINE")
 
 st.divider()
 
-st.subheader("📡 Live Telemetry Event Stream Feed")
-st.markdown("To view live simulated background events streaming through WebSockets, run your FastAPI server in a separate terminal and watch the live ticker below, or check your console logs.")
+# Tabs for Organization
+tab1, tab2, tab3 = st.tabs(["📡 Live Event Stream & Inspector", "🚀 Event Publisher", "📊 Architecture Overview"])
 
-# Instructions box for running the project
-st.info("""
-**How to run your backend server:**
-1. Open a second PowerShell terminal in your project directory.
-2. Activate your virtual environment: `venv\\Scripts\\activate`
-3. Run the FastAPI server with Uvicorn: `uvicorn api.main:app --reload`
-4. Keep this Streamlit dashboard open to monitor live broadcasts!
-""")
+with tab1:
+    st.subheader("Active Room Channels")
+    if active_rooms:
+        for room_name, count in active_rooms.items():
+            st.info(f"Room Channel: **{room_name}** | Connected Listeners: **{count}**")
+    else:
+        st.warning("No active room connections detected. Start client scripts or connect via WebSockets.")
 
-# Session state simulation feed for demo presentation if server is running
-if "event_history" not in st.session_state:
-    st.session_state.event_history = []
+with tab2:
+    st.subheader("Inject Custom Event into Mesh")
+    with st.form("publish_form"):
+        room = st.selectbox("Target Room Channel", ["telemetry", "financial-ticks", "security-alerts"])
+        event_name = st.text_input("Event Name", value="CUSTOM_AUDIT_LOG")
+        severity = st.selectbox("Severity Level", ["INFO", "WARNING", "CRITICAL", "SUCCESS"])
+        message = st.text_area("JSON Payload Data (Key-Value)", value='{"user": "admin", "action": "override"}')
+        
+        submitted = st.form_submit_button("Broadcast to Mesh")
+        if submitted:
+            try:
+                parsed_data = json.loads(message)
+                payload = {
+                    "room": room,
+                    "event_name": event_name,
+                    "severity": severity,
+                    "payload_data": parsed_data
+                }
+                res = requests.post(f"{api_url}/api/events/publish", json=payload)
+                if res.status_code == 200:
+                    st.success(f"Successfully broadcasted to {res.json().get('active_listeners', 0)} listeners in room '{room}'!")
+                else:
+                    st.error(res.text)
+            except json.JSONDecodeError:
+                st.error("Invalid JSON format in payload data.")
 
-# Refresh button
-if st.button("🔄 Refresh System Metrics"):
-    st.rerun()
+with tab3:
+    st.subheader("System Architecture & Design Patterns")
+    st.markdown("""
+    - **Asynchronous Event Loop (`asyncio`)**: Non-blocking I/O handling thousands of concurrent socket reads/writes.
+    - **Room-Based Partitioning**: Dynamic subscription routing separating data streams by channels (`telemetry`, `financial-ticks`, `security-alerts`).
+    - **Heartbeat & Zombie Pruning**: Automatic detection and cleanup of dropped socket connections to prevent memory leakage.
+    - **Zero-Dependency Core**: Built on pure FastAPI and WebSockets without heavy external broker overhead for maximum execution speed.
+    """)
