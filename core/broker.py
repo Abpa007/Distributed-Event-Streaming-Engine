@@ -19,7 +19,7 @@ class EnterpriseEventBroker:
         # Maps WebSocket object to client metadata (ID, joined rooms, connection time)
         self.client_metadata: Dict[WebSocket, Dict[str, Any]] = {}
 
-    async def connect(self, websocket: WebSocket, client_id: str, initial_room: str = "global"):
+    async def connect(self, websocket: WebSocket, client_id: str, initial_room: str = "telemetry"):
         """Accepts connection, registers client metadata, and joins default room."""
         await websocket.accept()
         
@@ -36,12 +36,15 @@ class EnterpriseEventBroker:
         logger.info(f"Client {client_id} connected and joined room: '{initial_room}'.")
 
     def disconnect(self, websocket: WebSocket):
-        """Cleanly removes client from all rooms and purges metadata."""
+        """Cleanly removes client from all rooms, purges metadata, and cleans up empty rooms."""
         meta = self.client_metadata.pop(websocket, None)
         if meta:
             for room in meta.get("rooms", set()):
                 if room in self.rooms and websocket in self.rooms[room]:
                     self.rooms[room].remove(websocket)
+                    # Auto-cleanup: Delete room key if no listeners remain
+                    if not self.rooms[room]:
+                        del self.rooms[room]
             logger.info(f"Client {meta.get('client_id')} disconnected.")
 
     async def join_room(self, websocket: WebSocket, room: str):
@@ -54,9 +57,11 @@ class EnterpriseEventBroker:
         logger.info(f"Client subscribed to room: '{room}'")
 
     async def leave_room(self, websocket: WebSocket, room: str):
-        """Unsubscribes a client from a specific channel room."""
+        """Unsubscribes a client from a specific channel room and cleans up if empty."""
         if room in self.rooms and websocket in self.rooms[room]:
             self.rooms[room].remove(websocket)
+            if not self.rooms[room]:
+                del self.rooms[room]
         if websocket in self.client_metadata:
             self.client_metadata[websocket]["rooms"].discard(room)
 
@@ -88,9 +93,10 @@ class EnterpriseEventBroker:
             self.disconnect(dead)
 
     def get_cluster_stats(self) -> Dict[str, Any]:
-        """Returns aggregate cluster telemetry for monitoring dashboards."""
+        """Returns aggregate cluster telemetry for monitoring dashboards (excluding empty rooms)."""
         total_connections = len(self.client_metadata)
-        room_breakdown = {room: len(clients) for room, clients in self.rooms.items()}
+        # Only include rooms that actually have active clients > 0
+        room_breakdown = {room: len(clients) for room, clients in self.rooms.items() if clients}
         return {
             "total_active_connections": total_connections,
             "active_rooms": room_breakdown,

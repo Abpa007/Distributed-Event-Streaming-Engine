@@ -1,18 +1,22 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, BackgroundTasks
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Dict, Any, Optional
 import asyncio
-import random
-import uuid
+import logging
 
 from core.broker import broker
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("EventMeshAPI")
+
 app = FastAPI(
-    title="Enterprise Distributed Event Mesh API",
-    description="High-throughput WebSocket messaging broker with room-based pub/sub routing.",
-    version="2.0.0"
+    title="Enterprise Distributed Event Mesh",
+    version="1.0.0",
+    description="Low-latency asynchronous WebSocket pub/sub routing engine."
 )
 
+# Enable CORS for external client applications
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,79 +25,80 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class CustomEvent(BaseModel):
+class EventPayload(BaseModel):
     room: str
     event_name: str
-    severity: str  # INFO, WARNING, CRITICAL, SUCCESS
-    payload_data: dict
-
-# Background task simulating multi-channel enterprise telemetry
-async def enterprise_telemetry_generator():
-    rooms = ["telemetry", "financial-ticks", "security-alerts"]
-    severities = ["INFO", "WARNING", "SUCCESS", "CRITICAL"]
-    
-    while True:
-        await asyncio.sleep(2.0)
-        if broker.client_metadata:
-            target_room = random.choice(rooms)
-            event_type = f"SYS_{target_room.upper()}_TICK"
-            
-            payload = {
-                "transaction_id": str(uuid.uuid4())[:8],
-                "metric_value": round(random.uniform(50.0, 500.0), 2),
-                "node_id": f"edge-worker-{random.randint(1, 6)}",
-                "status": "nominal" if target_room != "security-alerts" else "flagged"
-            }
-            await broker.broadcast_to_room(target_room, event_type, payload)
+    severity: str = "INFO"
+    payload_data: Dict[str, Any]
 
 @app.on_event("startup")
 async def startup_event():
+    """Starts the background worker that simulates live enterprise event generation."""
     asyncio.create_task(enterprise_telemetry_generator())
+    logger.info("Background enterprise telemetry generator started.")
+
+async def enterprise_telemetry_generator():
+    """Background task that pumps live ticks into rooms every 3 seconds."""
+    while True:
+        await asyncio.sleep(3)
+        # Broadcast a simulated telemetry tick
+        await broker.broadcast_to_room(
+            room="telemetry",
+            event_type="NODE_HEALTH_TICK",
+            payload={"status": "healthy", "cpu_load": 24.5, "active_nodes": 4}
+        )
+        # Broadcast a simulated financial tick
+        await broker.broadcast_to_room(
+            room="financial-ticks",
+            event_type="STOCK_PRICE_TICK",
+            payload={"symbol": "AAPL", "price": 185.92, "trend": "bullish"}
+        )
 
 @app.get("/health")
-def cluster_health():
-    """Returns cluster state, active room distributions, and connection counts."""
+async def cluster_health():
+    """Returns cluster health and active WebSocket connection statistics."""
     return {
-        "status": "healthy",
+        "status": "ONLINE",
         "cluster": broker.get_cluster_stats()
     }
 
+@app.post("/api/events/publish")
+async def publish_event(event: EventPayload):
+    """REST Webhook endpoint allowing external services to inject events into the mesh."""
+    try:
+        await broker.broadcast_to_room(
+            room=event.room,
+            event_type=event.event_name,
+            payload={
+                "severity": event.severity,
+                "data": event.payload_data
+            }
+        )
+        return {"status": "success", "message": f"Event published to room '{event.room}'"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.websocket("/ws/stream")
-async def websocket_gateway(websocket: WebSocket, client_id: str = Query(..., description="Unique client session identifier"), room: str = Query("telemetry", description="Initial room to subscribe")):
+async def websocket_gateway(websocket: WebSocket, client_id: str = "anonymous", room: str = "telemetry"):
     """
-    Enterprise WebSocket Endpoint with room partitioning and heartbeat management.
+    Primary WebSocket gateway endpoint. 
+    External clients connect here to maintain a persistent live data stream.
+    URL Example: ws://localhost:8000/ws/stream?client_id=trader_01&room=financial-ticks
     """
-    await broker.connect(websocket, client_id, initial_room=room)
+    await broker.connect(websocket, client_id=client_id, initial_room=room)
     try:
         while True:
-            raw_data = await websocket.receive_text()
-            # Handle client commands (e.g., room switching or heartbeats)
+            # Keep connection alive and listen for client commands (like room switching or pings)
+            data = await websocket.receive_text()
             try:
-                data = json.loads(raw_data)
-                action = data.get("action")
-                target_room = data.get("room")
-                
-                if action == "JOIN" and target_room:
-                    await broker.join_room(websocket, target_room)
-                    await websocket.send_text(json.dumps({"status": "success", "message": f"Joined room {target_room}"}))
-                elif action == "LEAVE" and target_room:
-                    await broker.leave_room(websocket, target_room)
-                    await websocket.send_text(json.dumps({"status": "success", "message": f"Left room {target_room}"}))
-                elif action == "PING":
-                    await websocket.send_text(json.dumps({"status": "PONG", "timestamp": data.get("timestamp")}))
-            except json.JSONDecodeError:
+                message = json.loads(data) if data else {}
+                if message.get("action") == "JOIN_ROOM":
+                    target_room = message.get("room")
+                    if target_room:
+                        await broker.join_room(websocket, target_room)
+                        await websocket.send_text(f'{{"status": "joined", "room": "{target_room}"}}')
+            except Exception:
                 pass
     except WebSocketDisconnect:
         broker.disconnect(websocket)
-
-@app.post("/api/events/publish")
-async def publish_event(event: CustomEvent):
-    """
-    REST webhook to inject custom events directly into a specific room mesh.
-    """
-    await broker.broadcast_to_room(event.room, event.event_name, event.payload_data)
-    return {
-        "status": "dispatched",
-        "target_room": event.room,
-        "active_listeners": len(broker.rooms.get(event.room, set()))
-    }
+        logger.info(f"Client {client_id} disconnected from gateway.")
